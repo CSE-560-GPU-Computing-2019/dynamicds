@@ -1,12 +1,13 @@
 //Krishna Bagaria MT18128
+//HAT --- Hashed Array Tree
 
 #include <stdio.h>
 #include <math.h>
 #include <stdlib.h>
 
-#define size 100
+#define size 100   //initial size of HAT
 
-
+// method to print the HAT
 void print_tree(int ** HAT, int n){
 	for (int i = 0; i < n; i++){
 		if (HAT[i] != NULL){
@@ -15,10 +16,13 @@ void print_tree(int ** HAT, int n){
 				printf("%d ",HAT[i][j]);
 			}
 		}
+		else {
+			printf("\nBucket %d is empty.",i);
+		}
 	}
 }
 
-
+//CPU method to insert elements in HAT from 'input' array passed as argument
 void insert_tree (int ** HAT, int n, int * input, int inputsize) {
 	for (int i = 0; i < inputsize; i++){
 		int j = i/n;
@@ -30,11 +34,12 @@ void insert_tree (int ** HAT, int n, int * input, int inputsize) {
 	}
 }
 
+//GPU method for inserting elements in HAT
 __global__ void insert_gpu (int ** HAT_d, int *input, int inputsize, int n) {
 	
 	int i = blockIdx.x * blockDim.x + threadIdx.x ;
 	
-	if(i<inputsize){
+	if(i < inputsize){
 		
 		int j = i/n;
 		int k = i % n;
@@ -46,7 +51,7 @@ __global__ void insert_gpu (int ** HAT_d, int *input, int inputsize, int n) {
 
 int main (int argc, const char **argv) {
 	int ** HAT;
-	int n = sqrt(size);
+	int n = sqrt(size);   //calculate size of main array or each leaf
 	HAT = (int **)malloc(sizeof(int *) * n);
 
 	int inputsize;
@@ -60,9 +65,9 @@ int main (int argc, const char **argv) {
 		scanf("%d", &input[i]);
 	}
 	
-	const clock_t begin_time = clock();
+	const clock_t begin_time = clock();  // measure CPU time for insertion
 	insert_tree(HAT, n , input, inputsize);
-	float runTime = (float)( clock() - begin_time ) /  CLOCKS_PER_SEC;
+	float runTime = (float)( clock() - begin_time ) / CLOCKS_PER_SEC;
 	printf("Time for inserting(CPU): %fs\n\n", runTime);
 	printf("\nOutput Tree by inserting from CPU:\n");
 	print_tree(HAT,n);
@@ -87,10 +92,10 @@ int main (int argc, const char **argv) {
 	int grid_size = (inputsize % 1024) ? ((inputsize/1024) + 1) : (inputsize/1024);
 	int block_size = 1024;
 	
-	const clock_t begin_time1 = clock();
+	const clock_t begin_time1 = clock(); 
 	insert_gpu<<<grid_size,block_size>>>(HAT_d,input_d, inputsize, n);
-	cudaDeviceSynchronize();
-	runTime = (float)( clock() - begin_time ) /  CLOCKS_PER_SEC;
+	//cudaDeviceSynchronize();
+	runTime = (float)( clock() - begin_time1 ) /  CLOCKS_PER_SEC;
 	printf("\n\nTime for inserting(GPU): %fs\n\n", runTime);
 	
 	cudaMemcpy (HAT, HAT_d, sizeof(int*) * n , cudaMemcpyDeviceToHost);
