@@ -5,7 +5,7 @@
 #include <math.h>
 #include <stdlib.h>
 
-#define size 1000000   //initial size of HAT
+#define size 100000000   //initial size of HAT
 
 int count_ints (const char* file_name)
 {
@@ -88,9 +88,9 @@ int main (int argc, const char **argv) {
 	int n = sqrt(size);   //calculate size of main array or each leaf
 	HAT = (int **)malloc(sizeof(int *) * n);
 	
-	int inputsize = count_ints ("data/input10000.txt");
+	int inputsize = count_ints ("data/input1000000.txt");
 	int * input = (int *)malloc(sizeof(int) * inputsize);
-	read_ints("input.txt",input);
+	read_ints("data/input1000000.txt",input);
 	
 	/*
 	for (int i =0; i<inputsize; i++) {
@@ -140,17 +140,18 @@ int main (int argc, const char **argv) {
 	
 	const clock_t begin_time1 = clock(); 
 	insert_gpu<<<grid_size,block_size>>>(HAT_d,input_d, inputsize, n);
-	//cudaDeviceSynchronize();
-	float runTime_gpu = (float)( clock() - begin_time1 ) /  CLOCKS_PER_SEC;
-	
+	cudaDeviceSynchronize();
+	float runTime_gpu1 = (float)( clock() - begin_time1 ) /  CLOCKS_PER_SEC;
 	
 	cudaMemcpy (HAT, HAT_d, sizeof(int*) * n , cudaMemcpyDeviceToHost);
+	float runTime_gpu2 = (float)( clock() - begin_time1 ) /  CLOCKS_PER_SEC;
 	
 	printf("\nOutput Tree by inserting from GPU:\n");
 	print_tree(HAT,n);
 	
-	printf("Time for inserting(CPU): %fs\n\n", runTime_cpu);
-	printf("\n\nTime for inserting(GPU): %fs\n\n", runTime_gpu);
+	printf("\n\nGPU Kernel Time: %fs\n\n", runTime_gpu1);
+	printf("\nGPU Kernel + Memory Transfer Time: %fs\n\n", runTime_gpu2);
+	printf("\nTime for inserting(CPU): %fs\n\n", runTime_cpu);
 	
 	cudaFree(HAT_d);
 	cudaFree(input_d);
