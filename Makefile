@@ -1,7 +1,7 @@
 rundictionary:
-	nvcc -arch sm_60 -o dict Mid_Eval_MT18145_dictionary.cu
+	nvcc -arch sm_60 -o endeval_dict End_Eval_MT18145_Dictionary.cu
 cleand:
-	rm -f dict
+	rm -f endeval_dict
 runHAT:
 	nvcc -arch sm_60 mid_eval_MT18128.cu -o HAT
 cleanHAT:
