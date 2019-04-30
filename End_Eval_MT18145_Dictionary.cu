@@ -13,30 +13,28 @@ unsigned long int numofelements = 0;
 unsigned long int maxelements = MAXE;
 unsigned long int size = 0; //Number of estimated key-value pairs in Array of Structure after insertion
 unsigned int loop=0;
-__device__ unsigned int found_flag = 0;//flag to be used to make other threads do the minimal work
+
 //key-value pairs are also referred to as elements in this code.
 //Structure for dictionary user-defined data type
 //Use structure of arrays instead to use sort and merge
-//Dictionary is not ordered and does not search for duplicate
+//Dictionary is ordered lexicographically and does not search for duplicate
 //keys. It supports any number of elements to be inserted
-//while executing on GPU. So it is dynamic dictionary.
-//Key value pairs are stored in order in which they are inserted.
+//while executing on GPU. So it is dynamic dictionary on GPU.
+//However, batch size during insertion/deletion should be less than maxelements,
+//otherwise risizing would become frequent and performance would degrade.
+//Key value pairs are stored in lexicographically sorted order.
 typedef struct
 {
 	char key[SIZE];
 	char value[SIZE];
-	//char* key;
-	//char* value;
+	
 }Dictionary;
 
 Dictionary *gpu_output_dict;
 	//desired Array of Structures on GPU of type Dictionary
 	//to store key value pairs on GPU 
-	//with inclusion of new key value pairs recently inserted
-	
+float runtime=0.0;
 
-
-//batchsize < size(in this project for other operations, not insertion)
 //Kernel to insert elements in existing dynamic GPU dictionary(Array of Structures)
 __global__ void insertBatch(Dictionary *dictionary, Dictionary *data, int batchsize, int size)
 {
@@ -47,34 +45,28 @@ __global__ void insertBatch(Dictionary *dictionary, Dictionary *data, int batchs
 		for (int i=0;i<SIZE;i++)
 		{
 			dictionary[index+size].key[i] = '\0';
-			//dictionary[index+size].key[i] = data[index].key[i];
-		}
+		}	
 		for (int i=0;i<SIZE;i++)
 		{
 			dictionary[index+size].value[i] = '\0';
-			//dictionary[index+size].value[i] = data[index].value[i];
 		}
 	}
 	__syncthreads();
 	if (index<batchsize)
 	{
-		//atomicAdd(count,1);
 		for (int i=0;i<SIZE;i++)
 		{
-			//dictionary[index+size].key[i] = '\0';
 			dictionary[index+size].key[i] = data[index].key[i];
 		}
-		//for (int i=0;i<value_len;i++)
 		for (int i=0;i<SIZE;i++)
 		{
-			//dictionary[index+size].value[i] = '\0';
 			dictionary[index+size].value[i] = data[index].value[i];
 		}	
 	}
-	__syncthreads();
-	
-	 
+	__syncthreads();	 
 }
+
+//Kernel to print elements of the Dictionary between index start and end
 __global__ void printDictionary(Dictionary *device_dictionary, int start, int end)
 {
 	//if (threadIx.x==0)
@@ -83,64 +75,58 @@ __global__ void printDictionary(Dictionary *device_dictionary, int start, int en
 		printf("Key: %s \tValue: %s \n",device_dictionary[i].key,device_dictionary[i].value);
 	}
 }
+
 //Kernel to copy key-value pairs of two different Dictionary Array of Structures
-//__global__ void copyongpu(Dictionary** dst,Dictionary** src, int batchsize)
 __global__ void copyongpu(Dictionary *dst, Dictionary *src, int batchsize)
 {
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
-	//if (index==0)
-	//		*count=0;
-	//	__syncthreads();
-		if (index<batchsize)
+		/*if (index<batchsize)
 		{
 			for (int i=0;i<SIZE;i++) 
 			{
 				dst[index].key[i]='\0';
 				dst[index].value[i]='\0';
-				//dst[index].key[i] = src[index].key[i];
-				//dst[index].value[i] = src[index].value[i];	
 			}
 		}
-		__syncthreads();
+		__syncthreads();*/
 	if (index<batchsize)
 	{
-		//atomicAdd(count,1);
 		for (int i=0;i<SIZE;i++) 
 		{
-			//dst[index].key[i]='\0';
-			//dst[index].value[i]='\0';
 			dst[index].key[i] = src[index].key[i];
 			dst[index].value[i] = src[index].value[i];	
 		}
 	
 	}
 	__syncthreads();
-		
-	
-	//__syncthreads();
-	//if (index>100000)
-	//	printf("Index: %d\n", index);
+
 }
+
+//Kernel to search bulk of elements in Dictionary
 __global__ void searchElements(Dictionary *temp, int *index_array, char** search_arr, int num, int numofelements)
 {
 	
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
 	int flag = -1;
-	
+	int tid = threadIdx.x;
+	__shared__ char search_arr_shared[1024][SIZE]; 
+	if (index<num)
+	{
+		for (int i=0;i<SIZE;i++)
+		search_arr_shared[tid][i]=search_arr[index][i];
+	}
 	__syncthreads();
 	if (index < num)
 	{
 		for (int i=0;i<numofelements;i++) 
 			{
 				flag = 0;
-				for (int j=0;search_arr[index][j]!='\0';j++)
+				for (int j=0;search_arr_shared[tid][j]!='\0';j++)
+				
 				{
-					//printf("Search arr: %c\n",search_arr[index][j]);
-					//printf("Present element: %c\n",temp[i].key[j]);
-
-					if (search_arr[index][j]!=temp[i].key[j])
+				
+					if (search_arr_shared[tid][j]!=temp[i].key[j])
 						{	
-							//int temp = flag+1;
 							flag = 1;
 							break;
 						}
@@ -148,10 +134,7 @@ __global__ void searchElements(Dictionary *temp, int *index_array, char** search
 				}
 				if (flag==0)
 				{
-					//printf("Index: %d\n",i);
 					index_array[index]=i;
-					//return;
-					//return;
 				}
 
 			}
@@ -161,6 +144,8 @@ __global__ void searchElements(Dictionary *temp, int *index_array, char** search
 
 }
 
+//Kernel to delete already searched elements by changing the first character of such elements in Dictionary and then eliminating them
+//after sorting. Complete logic is in method deleteElements() 
 __global__ void deleteElements(Dictionary *temp, int *index_array, int num)
 {
 	
@@ -180,14 +165,9 @@ __global__ void deleteElements(Dictionary *temp, int *index_array, int num)
 
 }
 
-
-/*
-__host__ __device__ 
-*/
+//Comparator function to be passed to sort()
 bool compareElements(const Dictionary &gpu_first_dictionary, const Dictionary &gpu_second_dictionary)
 {
-	//if (strncmp(*gpu_first_dictionary.value,*gpu_second_dictionary.value)!=0)
-	//int comparebits = 15;
 	int compared_value = 0;
 	for (int k=0;k<SIZE;k++)
 	{
@@ -203,23 +183,18 @@ bool compareElements(const Dictionary &gpu_first_dictionary, const Dictionary &g
 		}
 
 	}
-	//strncmp(gpu_first_dictionary.key,gpu_second_dictionary.key,comparebits);
 	if (compared_value<0)
 		return true;
 	else
 		return false;
-	//else
-		//return strncmp(*gpu_first_dictionary.value,*gpu_second_dictionary.key);
 };
-/**/
 
 
+//Function to handle the logic for insertion of elements into dynamic dictionary on GPU
 void insertData()
 {	
 	char input_string[35];//To take input from user
 	int num=NUM;
-	//int size = 0;
-	//int numofelements = 0;// Number of existing key-value pairs
 	printf("Enter number of key-value pairs. Enter 0 to exit. ");
 	scanf("%d",&num);
 	//If user enters 0 or negative number, program exits
@@ -237,34 +212,27 @@ void insertData()
 	cudaError_t cudaStatus;
 	maxelements = MAXE;
 	//if size of array of structure on GPU exceeds maxelements,
-	//then array of structure is resized,i.e., maxelements+=1000000
+	//then array of structure is resized,
 	//and GPU array of structure is copied to temporary array
 	//of structure and again copied back when resizing is done,
 	//then insertion is done
 	char *token = NULL;//Used to separate key and value inserted by user
-	//Iteration starts
-	//User would enter key-value pairs atleast once if num>0 from
-	//input taken above
-	//Iteration ends when user enters 0 or a negative number
 	
-	//do
-	//{
 		if (maxelements<num)
 		{
-			//batchsize should always be less than number of existing elements
-			printf("Number of elements to be inserted should be such that resizing is done only after many batches of insertions. Exiting. \n");
+			//batchsize should always be less than number of already allocated elements. Resizing should not be frequent.
+			printf("Number of elements to be inserted should be such that resizing is done only after many batches of insertions. Please enter value < 10 million. \n");
 			return;
 		}
 		size+=num;
+		//declared as global variable, helps in deletion operation too
 		//represents total no of elements after insertion
 		//Insertion yet to be done
-		//printf("Number of elements: %d\n",numofelements);
-		//printf("Number of elements estimated after insertion: %d\n",size);
-		//const clock_t begin_time2 = clock();
 		
 		loop+=1;	
 		if (size>maxelements)
-		{//resizing needed
+		{
+			//resizing needed
 			int numofblocks2 = 0, blocksize2 = 0;
 			//blocksize2, numofblocks2 are used for kernel launch
 			while (size>maxelements)
@@ -279,59 +247,19 @@ void insertData()
 			{
 				fprintf(stderr,"cudaMalloc failed for gpu_temp_dict: %s\n",cudaGetErrorString(errors));
 			}
-			/*for (int j=0;j<maxelements;j++)
-			{
-			//limit on word length of key and value <= 100 characters
-				cudaMemset(gpu_temp_dict[j].key,'\0',sizeof(gpu_output_dict[j].key));
-				cudaMemset(gpu_temp_dict[j].value,'\0',sizeof(gpu_output_dict[j].value));
-			 
-			}*/
-			//printf("Maxelements :%d\n",maxelements);	
-			//if (maxelements>1024)
-			//{
 				numofblocks2 = (maxelements%BLOCKSIZE==0)?(maxelements/BLOCKSIZE):(maxelements/BLOCKSIZE+1);
 				blocksize2 = BLOCKSIZE;
 				printf("Num of blocks %d\n",numofblocks2);
-			//}
-			/*else
-			{
-				numofblocks2 = 1;
-				blocksize2 = maxelements;	
-			}*/
-			//errors = cudaMemcpy(gpu_temp_dict,gpu_output_dict,numofelements*sizeof(Dictionary),cudaMemcpyDeviceToDevice);
-			//errors = cudaMemcpy(cpu_output_dict,gpu_output_dict,maxelements*sizeof(Dictionary),cudaMemcpyDeviceToHost);
-			/*if (errors!=cudaSuccess)
-			{
-				fprintf(stderr,"cudaMemcpy failed for gpu_output_dict to gpu_temp_dict: %s\n",cudaGetErrorString(errors));
-			}*/
-
+			
 			copyongpu<<<numofblocks2,blocksize2>>>((Dictionary*)gpu_temp_dict,(Dictionary*)gpu_output_dict,numofelements);
-			/*cudaStatus = cudaGetLastError();
-			if (cudaStatus!=cudaSuccess)
-			{
-				fprintf(stderr,"copyongpu kernel failed for gpu_output_dict to gpu_temp_dict: %s\n",cudaGetErrorString(cudaStatus));
-			}*/
-
+			
 			errors = cudaDeviceSynchronize();
 			if(errors!=cudaSuccess)
 			{
 				fprintf(stderr,"copyongpu kernel failed for gpu_output_dict to gpu_temp_dict: %s\n",cudaGetErrorString(errors));
 
-				//fprintf(stderr,"cudaDeviceSynchronize failed for gpu_output_dict to gpu_temp_dict copyongpu: %s\n",cudaGetErrorString(errors));
 			}
 			
-			//*cnt_host2 = 0;
-			/*errors = cudaMemcpy(cnt_host2,cnt2,sizeof(int),cudaMemcpyDeviceToHost);
-			if(errors!=cudaSuccess)
-			{
-				fprintf(stderr,"cudaMemcpy failed for cnt2 to cnt_host2: %s\n",cudaGetErrorString(errors));
-			}
-			printf("Count from copyongpu kernel: %d\n",*cnt_host2);
-			errors = cudaMemset(cnt2,0,sizeof(int));
-			if(errors!=cudaSuccess)
-			{
-				fprintf(stderr,"cudaMemset failed for count2: %s\n",cudaGetErrorString(errors));
-			}*/
 			errors = cudaFree(gpu_output_dict);
 			if(errors!=cudaSuccess)
 			{
@@ -342,40 +270,15 @@ void insertData()
 			{
 				fprintf(stderr,"cudaMalloc failed for resizing gpu_output_dict: %s\n",cudaGetErrorString(errors));
 			}
-			/*for (int j=0;j<maxelements;j++)
-			{
-			//limit on word length of key and value <= 100 characters
-				cudaMemset(gpu_output_dict[j].key,'\0',sizeof(gpu_output_dict[j].key));
-				cudaMemset(gpu_output_dict[j].value,'\0',sizeof(gpu_output_dict[j].value));
-			 
-			}*/
+			
 			copyongpu<<<numofblocks2,blocksize2>>>((Dictionary*)gpu_output_dict,(Dictionary*)gpu_temp_dict,numofelements);
-			/*cudaStatus = cudaGetLastError();
-			if (cudaStatus!=cudaSuccess)
-			{
-				fprintf(stderr,"copyongpu kernel failed for gpu_temp_dict to gpu_output_dict: %s\n",cudaGetErrorString(cudaStatus));
-			}*/
+			
 			errors = cudaDeviceSynchronize();
 			if(errors!=cudaSuccess)
 			{
 				fprintf(stderr,"copyongpu kernel failed for gpu_temp_dict to gpu_output_dict copyongpu: %s\n",cudaGetErrorString(errors));
 			}
-			//errors = cudaMemcpy(gpu_output_dict,gpu_temp_dict,numofelements*sizeof(Dictionary),cudaMemcpyDeviceToDevice);
-			/*if (errors!=cudaSuccess)
-			{
-				fprintf(stderr,"cudaMemcpy failed for gpu_temp_dict to gpu_output_dict: %s\n",cudaGetErrorString(errors));
-			}*/
-			/*errors = cudaMemcpy(cnt_host2,cnt2,sizeof(int),cudaMemcpyDeviceToHost);
-			if(errors!=cudaSuccess)
-			{
-				fprintf(stderr,"cudaMemcpy failed for cnt2 to cnt_host2: %s\n",cudaGetErrorString(errors));
-			}
-			printf("Count from copyongpu kernel: %d\n",*cnt_host2);
-			errors = cudaMemset(cnt2,0,sizeof(int));
-			if(errors!=cudaSuccess)
-			{
-				fprintf(stderr,"cudaMemset failed for count2: %s\n",cudaGetErrorString(errors));
-			}*/
+			
 			errors = cudaFree(gpu_temp_dict);
 			if(errors!=cudaSuccess)
 			{
@@ -383,27 +286,14 @@ void insertData()
 			}
 
 		}
-		
-		//if (num>1024)
-		//{
-			numofblocks = (num%BLOCKSIZE==0)?(num/BLOCKSIZE):(num/BLOCKSIZE+1);
-			blocksize = BLOCKSIZE;
-		//}
-		/*else
-		{
-			numofblocks = 1;
-			blocksize = num;	
-		}*/
-		//char inpt = '1';
-		//char jinp = '1';
+
+		clock_t initial_time,finish_time;
+		initial_time = clock();
+		numofblocks = (num%BLOCKSIZE==0)?(num/BLOCKSIZE):(num/BLOCKSIZE+1);
+		blocksize = BLOCKSIZE;
 		Dictionary *dict = (Dictionary*)malloc(num*sizeof(Dictionary));
-		//Dictionary dict[num];
 		for (int j=0;j<num;j++)
-		{//limit on word length of key and value <= 100 characters
-		//	printf("Enter key and value separated by - : ");
-			
-		//	scanf("%s",input_string);
-			//printf("Input: %s",input_string);
+		{
 			char *inp1 = (char*)malloc(SIZE*sizeof(char));
 			char *inp2 = (char*)malloc(SIZE*sizeof(char));
 			char jinp[10];
@@ -435,17 +325,11 @@ void insertData()
 			memset(dict[j].key,'\0',sizeof(dict[j].key));
 			memset(dict[j].value,'\0',sizeof(dict[j].value));
 			strncpy(dict[j].key,token,SIZE);
-			//printf("Key: %s\n",dict[j].key);
 			token = strtok(NULL,"-");
 			strncpy(dict[j].value,token,SIZE);
-			//printf("Value: %s\n",dict[j].value);
 			 
-			//dict[j].key = (char*)malloc(100);
-			//dict[j].value = (char*)malloc(100);
-			//jinp=jinp+1;
-			//printf("Enter value: ");
-			//inpt=inpt+'1';
 		}
+		
 		Dictionary *gpu_input_dict;
 		errors = cudaMalloc((void**)&gpu_input_dict,num*sizeof(Dictionary));
 		if(errors!=cudaSuccess)
@@ -457,64 +341,20 @@ void insertData()
 			{
 				fprintf(stderr,"cudaMemcpy failed for dict(host) to gpu_input_dict: %s\n",cudaGetErrorString(errors));
 			}
-		//const clock_t begin_time = clock();
-		//cudaMemset((void**)&gpu_output_dict,'\0',num*sizeof(Dictionary));
 		insertBatch<<<numofblocks,blocksize>>>(gpu_output_dict,gpu_input_dict,num,numofelements);
 		cudaStatus = cudaDeviceSynchronize();
 		if (cudaStatus!=cudaSuccess)
 		{
 			fprintf(stderr,"insertBatch kernel failed: %s\n",cudaGetErrorString(cudaStatus));
 		}
-		/*errors = cudaMemcpy(cnt_host1,cnt1,sizeof(int),cudaMemcpyDeviceToHost);
-		if(errors!=cudaSuccess)
-			{
-				fprintf(stderr,"cudaMemcpy failed for cnt1 to cnt_host1: %s\n",cudaGetErrorString(errors));
-			}*/
-		//printf("Count from insertBatch kernel: %d\n",*cnt_host1);
-		/*errors = cudaMemset(cnt1,0,sizeof(int));
-		if(errors!=cudaSuccess)
-			{
-				fprintf(stderr,"cudaMemset failed for count1: %s\n",cudaGetErrorString(errors));
-			}*/
-		//errors = cudaDeviceSynchronize();
-		//float runtime_insert = (float)(clock()-begin_time)/CLOCKS_PER_ ;
-		//printf("Insertion time(Only Kernel launch) for %d elements on GPU: %fsec\n",num,runtime_insert);
-
-		//Dictionary *cpu_output_dict = (Dictionary*)malloc(maxelements*sizeof(Dictionary));
-		//memset(cpu_output_dict,'\0',sizeof(Dictionary)*num);
-		/*Dictionary cpu_output_dict[maxelements];
-		for (int j=0;j<maxelements;j++)
-		{//limit on word length of key and value <= 100 characters
-			memset(cpu_output_dict[j].key,'\0',sizeof(cpu_output_dict[j].key));
-			memset(cpu_output_dict[j].value,'\0',sizeof(cpu_output_dict[j].value));
-			 
-		}
-		*/
-		/*errors = cudaMemcpy(cpu_output_dict,gpu_output_dict,maxelements*sizeof(Dictionary),cudaMemcpyDeviceToHost);
-		if(errors!=cudaSuccess)
-			{
-				fprintf(stderr,"cudaMemcpy failed for gpu_output_dict to cpu_output_dict: %s\n",cudaGetErrorString(errors));
-			}
-			*/
-		errors = cudaDeviceSynchronize();
-		if(errors!=cudaSuccess)
-			{
-				fprintf(stderr,"cudaDeviceSynchronize failed for insertBatch: %s\n",cudaGetErrorString(errors));
-			}
-		//float runtime_insert2 = (float)(clock()-begin_time2)/CLOCKS_PER_SEC;
-		//printf("Insertion time(Kernel launch+Memory calls) for %d elements on GPU: %fsec\n",num,runtime_insert2);
-
-		//free(dict);
-		//free(cpu_output_dict);
+		finish_time = clock();
+		runtime = finish_time - initial_time;
 		errors = cudaFree(gpu_input_dict);
 		if(errors!=cudaSuccess)
-			{
-				fprintf(stderr,"cudaFree failed for gpu_input_dict: %s\n",cudaGetErrorString(errors));
-			}
+		{
+			fprintf(stderr,"cudaFree failed for gpu_input_dict: %s\n",cudaGetErrorString(errors));
+		}
 		numofelements+=num;
-		//printf("Enter number of key-value pairs. Enter 0 to exit. ");
-		//scanf("%d",&num);
-		//free(cpu_output_dict);
 		free(dict);
 
 
@@ -533,19 +373,12 @@ void insertData()
 		}
 		
 		free(sort_dict);
-
-	//}while (num>0);
-
-	/*
-	errors = cudaFree(gpu_output_dict);
-	
-	if(errors!=cudaSuccess)
-	{
-		fprintf(stderr,"cudaFree failed for gpu_output_dict: %s\n",cudaGetErrorString(errors));
-	}
-	*/
+		printf("Time taken for Insertion on GPU: %fs.\n",(float)runtime/CLOCKS_PER_SEC);	
+		
 
 }
+
+//Function to handle the logic for search operation applied over dynamic dictionary on GPU
 void searchDictionary()
 {
 	int num=NUM;
@@ -564,7 +397,6 @@ void searchDictionary()
 		search_array[i] = (char*)malloc	(sizeof(char)*SIZE);
 		memset(search_array[i],'\0',sizeof(char)*SIZE);
 	}
-	//memset(search_array,'\0',sizeof(char)*num*SIZE);
 			
 	for (int j=0;j<num;j++)
 		{
@@ -580,7 +412,7 @@ void searchDictionary()
 				strcat(inp1,"_");
 				strcat(inp1,cloop);
 				strcpy(input_string,inp1);
-				//printf("Key to search for: %s .\n",input_string);
+				
 			}
 			
 			else if (num>0 && num<=5)
@@ -590,7 +422,7 @@ void searchDictionary()
 			}
 			
 			strncpy(search_array[j],input_string,SIZE);
-			//printf("Search array: %s. \n",search_array[j]);
+			
 		}
 		int *index_array = (int*)malloc(sizeof(int)*num);
 		//TO store indices of elements
@@ -606,24 +438,19 @@ void searchDictionary()
 			cudaMemset(search_h_array[i],'\0',sizeof(char)*SIZE);
 			cudaMemcpy(search_h_array[i],search_array[i],sizeof(char)*SIZE,cudaMemcpyHostToDevice);
 		}
+		clock_t initial_time,finish_time;
+		initial_time = clock();
 		cudaMemcpy(search_d_array,search_h_array,sizeof(char*)*num,cudaMemcpyHostToDevice);
-		//for (int i=0;i<num;i++)
-		//	printf("Elements: %s\n",search_h_array[i]);
 		unsigned int blocksize = 0, numofblocks = 0;
 		blocksize = BLOCKSIZE;
 		numofblocks = (num%BLOCKSIZE==0)?(num/BLOCKSIZE):(num/BLOCKSIZE+1);
-		//locksize = 1, numofblocks = 1;
-		//for (int element = 0;element<num;element++)
 		cudaMemset(index_d,-1,sizeof(int)*num);
 		searchElements<<<numofblocks,blocksize>>>(gpu_output_dict,index_d,search_d_array,num,numofelements);
-		//errors = 
 		cudaDeviceSynchronize();
+		finish_time = clock();
+		runtime = finish_time - initial_time;
 		cudaMemcpy(index_array,index_d,sizeof(int)*num,cudaMemcpyDeviceToHost);
-		/*if (errors!=cudaSuccess)
-		{
-			printf("Error in cudaMemcpy from index host to index device. \n");
-		}*/
-
+		
 		char keystring[SIZE];
 		char valuestring[SIZE];
 			
@@ -631,8 +458,6 @@ void searchDictionary()
 		{
 			memset(keystring,'\0',SIZE*sizeof(char));
 			memset(valuestring,'\0',SIZE*sizeof(char));
-			//cudaMemcpy(keystring,search_h_array[i],sizeof(char)*SIZE,cudaMemcpyDeviceToHost);
-			//printf("Indices for key %s is : %d.\n",keystring,index_array[i]);
 			if (index_array[i]!=-1)
 			{
 				cudaMemcpy(keystring,gpu_output_dict[index_array[i]].key,sizeof(char)*SIZE,cudaMemcpyDeviceToHost);
@@ -654,9 +479,12 @@ void searchDictionary()
 		free(index_array);
 		cudaFree(index_d);
 		cudaFree(search_d_array);
+		printf("Time taken for Lookup on GPU: %fs.\n",(float)runtime/CLOCKS_PER_SEC);
+		
 		loop2+=1;
 }
 
+//Function to handle the logic for delete operation applied over dynamic dictionary on GPU
 void deleteDictionary()
 {
 	static int loop2=1;
@@ -675,7 +503,6 @@ void deleteDictionary()
 		search_array[i] = (char*)malloc	(sizeof(char)*SIZE);
 		memset(search_array[i],'\0',sizeof(char)*SIZE);
 	}
-	//memset(search_array,'\0',sizeof(char)*num*SIZE);
 			
 	for (int j=0;j<num;j++)
 		{
@@ -691,7 +518,7 @@ void deleteDictionary()
 				strcat(inp1,"_");
 				strcat(inp1,cloop);
 				strcpy(input_string,inp1);
-				//printf("Key to search for: %s .\n",input_string);
+				
 			}
 			
 			else if (num>0 && num<=5)
@@ -701,7 +528,7 @@ void deleteDictionary()
 			}
 			
 			strncpy(search_array[j],input_string,SIZE);
-			//printf("Search array: %s. \n",search_array[j]);
+			
 		}
 		int *index_array = (int*)malloc(sizeof(int)*num);
 		//TO store indices of elements
@@ -718,22 +545,16 @@ void deleteDictionary()
 			cudaMemcpy(search_h_array[i],search_array[i],sizeof(char)*SIZE,cudaMemcpyHostToDevice);
 		}
 		cudaMemcpy(search_d_array,search_h_array,sizeof(char*)*num,cudaMemcpyHostToDevice);
-		//for (int i=0;i<num;i++)
-		//	printf("Elements: %s\n",search_h_array[i]);
 		unsigned int blocksize = 0, numofblocks = 0;
 		blocksize = BLOCKSIZE;
 		numofblocks = (num%BLOCKSIZE==0)?(num/BLOCKSIZE):(num/BLOCKSIZE+1);
-		//locksize = 1, numofblocks = 1;
-		//for (int element = 0;element<num;element++)
 		cudaMemset(index_d,-1,sizeof(int)*num);
+		clock_t initial_time,finish_time;
+		initial_time = clock();
 		searchElements<<<numofblocks,blocksize>>>(gpu_output_dict,index_d,search_d_array,num,numofelements);
-		//errors = 
+		//Found elements would be deleted. Two step for deletion - search then if found, delete
 		cudaDeviceSynchronize();
 		cudaMemcpy(index_array,index_d,sizeof(int)*num,cudaMemcpyDeviceToHost);
-		/*if (errors!=cudaSuccess)
-		{
-			printf("Error in cudaMemcpy from index host to index device. \n");
-		}*/
 		int count = 0;
 		for (int loop=0;loop<num;loop++)
 		{
@@ -741,12 +562,12 @@ void deleteDictionary()
 				count++;
 		}
 
-		//char keystring[SIZE];
-		//char valuestring[SIZE];
 		cudaError_t errors;
 		deleteElements<<<numofblocks,blocksize>>>(gpu_output_dict,index_d,num);
 		cudaDeviceSynchronize();
-
+		finish_time = clock();
+		runtime = finish_time - initial_time;
+		
 		for (int i=0;i<num;i++)
 		{
 			cudaFree(search_h_array[i]);
@@ -779,41 +600,40 @@ void deleteDictionary()
 		size = size - count;
 
 		loop2+=1;
+		printf("Time taken for Deletion on GPU: %fs.\n",(float)runtime/CLOCKS_PER_SEC);
+
 }
 
+//Function to handle the logic for Range Query Operation(Count+Lookup) applied over dynamic dictionary on GPU
 void rangeQuery()
 {
-	//static int loop2=1;
 	int num=NUM;
-	//printf("Enter number of key-value pairs to delete from dictionary. \n");
-	//scanf("%d",&num);
 	char input_string[SIZE];
 	char **search_array = (char**)malloc(sizeof(char*)*2);
-	//char search_array[2][SIZE];
 	for (int i=0;i<2;i++)
 	{
 		search_array[i] = (char*)malloc	(sizeof(char)*SIZE);
 		memset(search_array[i],'\0',sizeof(char)*SIZE);
 	}
-			num = 2;
+	num = 2; //num is 2 as only two keys are provided by user
 	for (int j=0;j<2;j++)
 		{
 			printf("Enter the key(Key must be exisitng in dictionary): ");
 			scanf("%s",input_string);	
 			
 			strncpy(search_array[j],input_string,SIZE);
-			//printf("Search array: %s. \n",search_array[j]);
+			
 		}
 
 		int *index_array = (int*)malloc(sizeof(int)*2);
-		//int index_array[2];
 		//TO store indices of elements
 		int *index_d;
 		cudaMalloc((void**)&index_d,sizeof(int)*2);
 		char **search_d_array;
-		//char search_d_array
 		char **search_h_array = (char**)malloc(sizeof(char*)*num);
 		cudaMalloc((void**)&search_d_array,sizeof(char*)*num);
+		clock_t initial_time,finish_time;
+		initial_time = clock();
 		cudaMemcpy(search_h_array,search_d_array,sizeof(char*)*num,cudaMemcpyDeviceToHost);
 		for (int i=0;i<num;i++)
 		{
@@ -822,22 +642,14 @@ void rangeQuery()
 			cudaMemcpy(search_h_array[i],search_array[i],sizeof(char)*SIZE,cudaMemcpyHostToDevice);
 		}
 		cudaMemcpy(search_d_array,search_h_array,sizeof(char*)*num,cudaMemcpyHostToDevice);
-		//for (int i=0;i<num;i++)
-		//	printf("Elements: %s\n",search_h_array[i]);
-		unsigned int blocksize = 0, numofblocks = 0;
-		//blocksize = BLOCKSIZE;
-		//numofblocks = (num%BLOCKSIZE==0)?(num/BLOCKSIZE):(num/BLOCKSIZE+1);
-		//locksize = 1, numofblocks = 1;
-		//for (int element = 0;element<num;element++)
 		cudaMemset(index_d,-1,sizeof(int)*num);
 		searchElements<<<1,2>>>(gpu_output_dict,index_d,search_d_array,num,numofelements);
-		//errors = 
 		cudaDeviceSynchronize();
+		finish_time = clock();
+		runtime = finish_time - initial_time;
 		cudaMemcpy(index_array,index_d,sizeof(int)*num,cudaMemcpyDeviceToHost);
-		/*if (errors!=cudaSuccess)
-		{
-			printf("Error in cudaMemcpy from index host to index device. \n");
-		}*/
+		
+		
 		int count = 0;
 		if (index_array[0]!=-1)
 			count++;
@@ -860,10 +672,6 @@ void rangeQuery()
 		printf("Number of elements between elements corresponding to given two keys are: %d\n",rangecount);
 		printf("Elements are: \n");
 		printDictionary<<<1,1>>>(gpu_output_dict,index_array[0],index_array[1]);
-		//char keystring[SIZE];
-		//char valuestring[SIZE];
-		//cudaError_t errors;
-		//printDictionary<<<numofblocks,blocksize>>>(gpu_output_dict,index_d,num);
 		cudaDeviceSynchronize();
 
 		for (int i=0;i<num;i++)
@@ -877,24 +685,24 @@ void rangeQuery()
 		free(index_array);
 		cudaFree(index_d);
 		cudaFree(search_d_array);
-
+		printf("Time taken for Range Query on GPU: %fs.\n",(float)runtime/CLOCKS_PER_SEC);
 		
-		//loop2+=1;
+
 }
 
 int main()
 {
-	//int num = NUM;
-	//num represents number of elements user wants to enter
-	//in any iteration
 	cudaError_t errors;
 	
 	char user_input[50];
 	memset(user_input,'\0',50);
 	errors = cudaMalloc((void**)&gpu_output_dict,maxelements*sizeof(Dictionary));
+	//float runtime=0.0;
+	//clock_t initial_time,finish_time;
 	if(errors!=cudaSuccess)
 	{
 		fprintf(stderr,"cudaMalloc failed for gpu_output_dict: %s\n",cudaGetErrorString(errors));
+		return 0;
 	}
 	
 	do
@@ -909,20 +717,15 @@ int main()
 		printf("\n\n***************************************************************************************************\n\n");
 		printf("Enter your choice [insert/delete/showlast/showfirst/search/range-search/exit]: ");
 		scanf("%s",user_input);
-		cudaEvent_t start,stop;
-		float time;
-		cudaEventCreate(&start);
-		cudaEventCreate(&stop);
 			
 		if (strncmp(user_input,"insert",6)==0)
 		{
 			printf("Insert operation. \n");
-			cudaEventRecord(start,0);
+			//initial_time = clock();
 			insertData();
-			cudaEventRecord(stop,0);
-			cudaEventSynchronize(stop);
-			cudaEventElapsedTime(&time,start,stop);
-			printf("Time taken for Insertion on GPU: %fms.\n",time/1000);
+			//finish_time = clock();
+			//runtime = finish_time - initial_time;
+			//printf("Time taken for Insertion on GPU: %fs.\n",(float)runtime/CLOCKS_PER_SEC);
 		}
 		else if (strncmp(user_input,"delete",6)==0)
 		{
@@ -933,12 +736,11 @@ int main()
 			else
 			{
 				printf("Delete operation. \n");
-				cudaEventRecord(start,0);
+				//initial_time = clock();
 				deleteDictionary();
-				cudaEventRecord(stop,0);
-				cudaEventSynchronize(stop);
-				cudaEventElapsedTime(&time,start,stop);
-				printf("Time taken for Deletion on GPU: %fms.\n",time/1000);		
+				//finish_time = clock();
+				//runtime = finish_time - initial_time;
+				//printf("Time taken for Deletion on GPU: %fs.\n",(float)runtime/CLOCKS_PER_SEC);		
 			}
 			
 		}
@@ -996,13 +798,11 @@ int main()
 			else
 			{
 				printf("Search operation. \n");
-				cudaEventRecord(start,0);
-				
+				//initial_time = clock();		
 				searchDictionary();
-				cudaEventRecord(stop,0);
-				cudaEventSynchronize(stop);
-				cudaEventElapsedTime(&time,start,stop);
-				printf("Time taken for Lookup operation on GPU: %fms.\n",time/1000);
+				//finish_time = clock();
+				//runtime = finish_time - initial_time;
+				//printf("Time taken for Lookup operation on GPU: %fs.\n",(float)runtime/CLOCKS_PER_SEC);
 			}
 			
 		}
@@ -1015,12 +815,11 @@ int main()
 			else
 			{
 				printf("Range-Search operation. \n");
-				cudaEventRecord(start,0);
+				//initial_time = clock();		
 				rangeQuery();
-				cudaEventRecord(stop,0);
-				cudaEventSynchronize(stop);
-				cudaEventElapsedTime(&time,start,stop);
-				printf("Time taken for Range search/Count operation on GPU: %fms.\n",time/1000);
+				//finish_time = clock();
+				//runtime = finish_time - initial_time;
+				//printf("Time taken for Range search/Count operation on GPU: %fs.\n",(float)runtime/CLOCKS_PER_SEC);
 				
 			}
 			
