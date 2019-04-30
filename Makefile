@@ -3,7 +3,7 @@ rundictionary:
 cleand:
 	rm -f endeval_dict
 runHAT:
-	nvcc -arch sm_60 mid_eval_MT18128.cu -o HAT
+	nvcc -arch sm_60 final_eval_MT18128_HAT.cu -o HAT
 cleanHAT:
 	rm -f HAT
 runHashTable:
